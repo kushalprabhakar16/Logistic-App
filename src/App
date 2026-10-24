@@ -1,0 +1,321 @@
+import { useEffect, useMemo, useState } from 'react'
+import QRCode from 'qrcode'
+import { LayoutDashboard, PackagePlus, Boxes, Route, Anchor, Globe2, LogOut, Download, X, Check, Menu, ShieldCheck, Pencil, Trash2, Plus, RotateCcw } from 'lucide-react'
+import { ROLES, CREDS, Role, Tab, CATEGORIES, Cat, FIELDS, compute, STATUSES, CAN_ACCEPT, CAN_VERIFY, MODES, Cargo, Ev, Task, SEED_CARGO, SEED_EVENTS, SEED_TASKS } from './data'
+import { CAPACITIES, Capacity, checkCapacity } from './units'
+import { zonedToUtc, fmtLocal, fmtClock, allZones, to12 } from './time'
+import { genCargo } from './seed'
+
+const BASE = genCargo()
+type Delta = { added: Cargo[]; edits: Record<string, Partial<Cargo>>; deleted: string[] }
+
+function useLS<T>(key: string, init: T) {
+  const [v, setV] = useState<T>(() => { try { const s = localStorage.getItem(key); return s ? (JSON.parse(s) as T) : init } catch { return init } })
+  useEffect(() => { try { localStorage.setItem(key, JSON.stringify(v)) } catch { /* storage unavailable */ } }, [key, v])
+  return [v, setV] as const
+}
+const uid = (p: string) => p + Date.now().toString(36).toUpperCase() + Math.floor(Math.random() * 99)
+const STATUS_COLOR: Record<string, string> = { Draft: '#94a3b8', Accepted: '#38bdf8', Verified: '#4ade80', Booked: '#60a5fa', Received: '#22d3ee', 'Awaiting verification': '#fbbf24', Loaded: '#a78bfa', 'In transit': '#d946ef', Unloaded: '#2dd4bf', Delivered: '#34d399', Damaged: '#f87171' }
+const Badge = ({ s }: { s: string }) => <span className="rounded-full px-2 py-0.5 text-xs font-semibold" style={{ background: STATUS_COLOR[s] + '26', color: STATUS_COLOR[s], border: `1px solid ${STATUS_COLOR[s]}66` }}>{s}</span>
+const Sel = ({ value, onChange, opts, label }: { value: string; onChange: (v: string) => void; opts: string[]; label: string }) => (
+  <div><label className="lbl">{label}<select className="inp mt-1" value={value} onChange={e => onChange(e.target.value)}>{opts.map(o => <option key={o}>{o}</option>)}</select></label></div>)
+
+export default function App() {
+  const [role, setRole] = useState<Role | null>(null)
+  const [delta, setDelta] = useLS<Delta>('lsg_delta', { added: [], edits: {}, deleted: [] })
+  const cargo = useMemo(() => {
+    const del = new Set(delta.deleted); const out: Cargo[] = []
+    for (const c of [...delta.added, ...BASE]) { if (del.has(c.id)) continue; const e = delta.edits[c.id]; out.push(e ? { ...c, ...e } : c) }
+    return out
+  }, [delta])
+  const update = (ids: string[], patch: Partial<Cargo>) => setDelta(d => { const edits = { ...d.edits }; for (const id of ids) edits[id] = { ...edits[id], ...patch, updated: new Date().toISOString() }; return { ...d, edits } })
+  const remove = (ids: string[]) => setDelta(d => ({ ...d, deleted: [...d.deleted, ...ids] }))
+  const reset = () => { if (window.confirm('Reset all demo data and your changes?')) { setDelta({ added: [], edits: {}, deleted: [] }); setEvents(SEED_EVENTS); setTasks(SEED_TASKS) } }
+  const [events, setEvents] = useLS<Ev[]>('lsg_events', SEED_EVENTS)
+  const [tasks, setTasks] = useLS<Task[]>('lsg_tasks', SEED_TASKS)
+  const [tab, setTab] = useState<Tab>('dashboard')
+  const [nav, setNav] = useState(false)
+  if (!role) return <Login onPick={r => { setRole(r); setTab('dashboard') }} />
+  const names: Record<Tab, [string, JSX.Element]> = {
+    dashboard: ['Dashboard', <LayoutDashboard size={18} />], add: ['Add new cargo', <PackagePlus size={18} />], cargo: ['Cargo', <Boxes size={18} />],
+    track: ['Shipment tracking', <Route size={18} />], ops: [role.id === 'driver' ? 'Pickup & delivery' : role.id.startsWith('air') ? 'Airport operations' : role.id === 'warehouse' ? 'Warehouse operations' : role.id === 'road' ? 'Dispatch operations' : 'Port operations', <Anchor size={18} />], clock: ['World clock', <Globe2 size={18} />] }
+  const log = (e: Omit<Ev, 'id'>) => setEvents(p => [{ ...e, id: uid('e') }, ...p])
+  return (
+    <div className="flex min-h-screen">
+      <aside className={`${nav ? 'flex' : 'hidden'} md:flex fixed md:sticky top-0 z-30 h-screen w-60 shrink-0 flex-col gap-1 p-3 glass rounded-none`}>
+        <div className="mb-3 px-2 text-lg font-bold bg-gradient-to-r from-cyan-300 via-violet-400 to-fuchsia-400 bg-clip-text text-transparent">LogiSphere Global</div>
+        {role.tabs.map(t => (
+          <button key={t} onClick={() => { setTab(t); setNav(false) }} className={`flex items-center gap-2 rounded-lg px-3 py-2 text-left text-sm ${tab === t ? 'bg-violet-500/25 text-white' : 'text-slate-300 hover:bg-white/5'}`}>{names[t][1]}{names[t][0]}</button>))}
+        <div className="mt-auto rounded-lg bg-white/5 p-3 text-xs"><div className="font-semibold">{role.name}</div><div className="text-slate-400">{role.desc}</div>
+          <button className="btn btn-ghost mt-2 w-full justify-center" onClick={() => setRole(null)}><LogOut size={14} />Switch portal</button>
+          <button className="btn btn-ghost mt-2 w-full justify-center" onClick={reset}><RotateCcw size={14} />Reset demo data</button></div>
+      </aside>
+      <main className="min-w-0 flex-1 p-4 md:p-6">
+        <div className="mb-4 flex items-center gap-3"><button aria-label="Toggle menu" className="btn btn-ghost md:hidden" onClick={() => setNav(!nav)}><Menu size={18} /></button>
+          <h1 className="text-2xl font-bold">{names[tab][0]}</h1><span className="ml-auto text-xs text-slate-400">Demo data stored in this browser</span></div>
+        {tab === 'dashboard' && <Dashboard role={role} cargo={cargo} tasks={tasks} events={events} />}
+        {tab === 'add' && <AddCargo role={role} onSave={(c, ev) => { setDelta(d => ({ ...d, added: [c, ...d.added] })); log(ev); setTab('cargo') }} />}
+        {tab === 'cargo' && <CargoTable cargo={cargo} role={role} update={update} remove={remove} goAdd={() => setTab('add')} log={log} />}
+        {tab === 'track' && <Tracking events={events} cargo={cargo} />}
+        {tab === 'ops' && role.ops && <Ops role={role} cargo={cargo} update={update} events={events} setEvents={setEvents} tasks={tasks} setTasks={setTasks} log={log} />}
+        {tab === 'clock' && <Clock />}
+      </main>
+    </div>)
+}
+
+function Login({ onPick }: { onPick: (r: Role) => void }) {
+  const [r, setR] = useState<Role | null>(null); const [id, setId] = useState(''); const [pw, setPw] = useState(''); const [err, setErr] = useState('')
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault(); if (!r) return
+    const [uid, pass] = CREDS[r.id]
+    if (id.trim().toLowerCase() === uid && pw === pass) onPick(r); else setErr('Login ID or password is incorrect for this portal.')
+  }
+  return (
+    <div className="mx-auto max-w-5xl p-6">
+      <div className="rim mb-8"><div className="glass p-8"><h1 className="text-3xl font-bold bg-gradient-to-r from-cyan-300 via-violet-400 to-fuchsia-400 bg-clip-text text-transparent">LogiSphere Global</h1>
+        <p className="mt-2 max-w-xl text-slate-300">Road, sea and air cargo on one shipment ID. Choose your portal, then sign in with its login ID and password.</p></div></div>
+      {!r ? <>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{ROLES.map(x => (
+          <button key={x.id} onClick={() => { setR(x); setId(''); setPw(''); setErr('') }} className={`glass p-4 text-left hover:border-cyan-300/60 ${x.id === 'portstaff' ? 'ring-2 ring-cyan-400/60' : ''}`}><div className="font-semibold">{x.name}</div><div className="text-sm text-slate-400">{x.desc}</div></button>))}</div>
+        <details className="glass mt-6 p-4 text-sm"><summary className="cursor-pointer font-semibold">Demo accounts (login ID / password)</summary>
+          <table className="mt-3 w-full"><tbody>{ROLES.map(x => <tr key={x.id} className="border-t border-white/10"><td className="p-1.5">{x.name}</td><td className="p-1.5 font-mono">{CREDS[x.id][0]}</td><td className="p-1.5 font-mono">{CREDS[x.id][1]}</td></tr>)}</tbody></table>
+          <p className="mt-2 text-xs text-amber-300">These are demo credentials checked in your browser only. A production system needs the backend for real authentication.</p></details></>
+      : <form onSubmit={submit} className="glass mx-auto max-w-md space-y-3 p-6">
+        <h2 className="text-xl font-bold">{r.name}</h2>
+        <div><label className="lbl">Login ID<input className="inp mt-1" autoComplete="username" value={id} onChange={e => { setId(e.target.value); setErr('') }} autoFocus /></label></div>
+        <div><label className="lbl">Password<input className="inp mt-1" type="password" autoComplete="current-password" value={pw} onChange={e => { setPw(e.target.value); setErr('') }} /></label></div>
+        {err && <p role="alert" className="text-sm text-red-300">{err}</p>}
+        <div className="flex gap-2"><button className="btn" type="submit">Sign in</button><button className="btn btn-ghost" type="button" onClick={() => setR(null)}>Choose another portal</button></div></form>}
+    </div>)
+}
+
+function Stat({ label, value }: { label: string; value: string | number }) { return <div className="glass p-4"><div className="text-3xl font-bold">{value}</div><div className="text-sm text-slate-400">{label}</div></div> }
+
+function Dashboard({ role, cargo, tasks, events }: { role: Role; cargo: Cargo[]; tasks: Task[]; events: Ev[] }) {
+  const by = STATUSES.map(s => [s, cargo.filter(c => c.status === s).length] as const)
+  const max = Math.max(1, ...by.map(b => b[1]))
+  const pend = events.filter(e => e.kind === 'handover' && !e.confirmed).length
+  const stf = role.id === 'portstaff'
+  return (
+    <div className="space-y-4">
+      {stf && <div className="glass grid gap-2 p-4 text-sm sm:grid-cols-4"><div><div className="text-slate-400">Staff</div>Amit Rao</div><div><div className="text-slate-400">Employee ID</div>PGS-2041</div><div><div className="text-slate-400">Seaport / terminal</div>Chennai Port, Terminal 2</div><div><div className="text-slate-400">Shift</div>Day 6:00 AM - 2:00 PM IST</div></div>}
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <Stat label="Total cargo records" value={cargo.length} /><Stat label="In transit" value={cargo.filter(c => c.status === 'In transit').length} />
+        <Stat label="Awaiting verification" value={cargo.filter(c => c.status === 'Awaiting verification').length} /><Stat label="Damaged reports" value={cargo.filter(c => c.status === 'Damaged').length} />
+        {stf && <><Stat label="Today's tasks" value={tasks.length} /><Stat label="Pending tasks" value={tasks.filter(t => t.status !== 'Done').length} /><Stat label="Pending handovers" value={pend} /><Stat label="Loaded / unloaded" value={cargo.filter(c => c.status === 'Loaded' || c.status === 'Unloaded').length} /></>}
+      </div>
+      <div className="glass p-4"><h2 className="mb-3 font-semibold">Cargo by status</h2>
+        {by.map(([s, n]) => <div key={s} className="mb-2 flex items-center gap-3 text-sm"><span className="w-40 shrink-0 text-slate-300">{s}</span><div className="h-3 flex-1 rounded bg-white/5"><div className="h-3 rounded" style={{ width: `${(n / max) * 100}%`, background: STATUS_COLOR[s] }} /></div><span className="w-6 text-right">{n}</span></div>)}</div>
+    </div>)
+}
+
+function AddCargo({ role, onSave }: { role: Role; onSave: (c: Cargo, e: Omit<Ev, 'id'>) => void }) {
+  const [cat, setCat] = useState<Cat>('solid')
+  const init = (c: Cat) => Object.fromEntries(FIELDS[c].filter(f => f.def).map(f => [f.k, f.def!]))
+  const [f, setF] = useState<Record<string, string>>(init('solid'))
+  const [h, setH] = useState({ shipmentId: '', product: '', origin: '', destination: '', mode: 'Road', cap: 'Truck (18 t)' as Capacity, tz: 'Asia/Kolkata' })
+  const [done, setDone] = useState<{ c: Cargo; qr: string } | null>(null)
+  const [draft, setDraft] = useState('')
+  const calc = useMemo(() => compute(cat, f), [cat, f])
+  const cap = checkCapacity(h.cap, calc.massKg, calc.volumeM3)
+  const hErr = [!h.product && 'Product name is required', !h.origin && 'Origin is required', !h.destination && 'Destination is required'].filter(Boolean) as string[]
+  const errors = [...hErr, ...calc.errors, ...cap.issues]
+  if (!role.add) return <div className="glass p-4">Your role cannot add cargo.</div>
+  const save = async (status: string) => {
+    const c: Cargo = { id: uid('CG-'), shipmentId: h.shipmentId || uid('SHP-'), product: h.product, category: cat, qty: calc.qty, count: calc.count, massKg: calc.massKg, volumeM3: calc.volumeM3, packaging: calc.packaging, origin: h.origin, destination: h.destination, mode: h.mode, dept: role.name, location: h.origin, status, updated: new Date().toISOString() }
+    const qr = await QRCode.toDataURL(`${c.id}|${c.shipmentId}`, { margin: 1, width: 200 })
+    setDone({ c, qr }); onSave(c, { shipmentId: c.shipmentId, kind: 'event', title: `Cargo ${c.id} ${status === 'Draft' ? 'saved as draft' : 'booked'}`, place: h.origin, tz: h.tz, at: new Date().toISOString(), cargoId: c.id })
+  }
+  const dup = () => { setDraft('Duplicated: change the product name to create a second item'); setH({ ...h, product: h.product + ' (copy)' }) }
+  return (
+    <div className="grid gap-4 lg:grid-cols-3">
+      <div className="glass space-y-4 p-4 lg:col-span-2">
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div><label className="lbl">Shipment number (blank creates new)<input className="inp mt-1" value={h.shipmentId} onChange={e => setH({ ...h, shipmentId: e.target.value })} placeholder="SHP-1001" /></label></div>
+          <div><label className="lbl">Product name<input className="inp mt-1" value={h.product} onChange={e => setH({ ...h, product: e.target.value })} placeholder="e.g. Basmati rice" /></label></div>
+          <div><label className="lbl">Cargo category<select className="inp mt-1" value={cat} onChange={e => { const c = e.target.value as Cat; setCat(c); setF(init(c)) }}>{CATEGORIES.map(([k, n]) => <option key={k} value={k}>{n}</option>)}</select></label></div>
+          <Sel label="Transport mode" value={h.mode} onChange={v => setH({ ...h, mode: v })} opts={MODES} />
+          <div><label className="lbl">Origin<input className="inp mt-1" value={h.origin} onChange={e => setH({ ...h, origin: e.target.value })} placeholder="Chennai, IN" /></label></div>
+          <div><label className="lbl">Destination<input className="inp mt-1" value={h.destination} onChange={e => setH({ ...h, destination: e.target.value })} placeholder="Rotterdam, NL" /></label></div>
+          <Sel label="Vehicle / container (capacity check)" value={h.cap} onChange={v => setH({ ...h, cap: v as Capacity })} opts={Object.keys(CAPACITIES)} />
+          <div><label className="lbl">Origin time zone<select className="inp mt-1" value={h.tz} onChange={e => setH({ ...h, tz: e.target.value })}>{allZones().map(z => <option key={z}>{z}</option>)}</select></label></div>
+        </div>
+        <div className="border-t border-white/10 pt-3"><h3 className="mb-2 font-semibold">{CATEGORIES.find(c => c[0] === cat)![1]} details</h3>
+          <div className="grid gap-3 sm:grid-cols-2">{FIELDS[cat].map(fl => fl.opts
+            ? <Sel key={cat + fl.k} label={fl.label} value={f[fl.k] || fl.def || ''} onChange={v => setF({ ...f, [fl.k]: v })} opts={fl.opts} />
+            : <div key={cat + fl.k}><label className="lbl">{fl.label}{fl.opt ? ' (optional)' : ''}<input className="inp mt-1" inputMode="decimal" type={fl.k === 'uname' ? 'text' : 'number'} min="0" value={f[fl.k] || ''} onChange={e => setF({ ...f, [fl.k]: e.target.value })} /></label></div>)}</div></div>
+        <div className="flex flex-wrap gap-2"><button className="btn" disabled={errors.length > 0} onClick={() => save('Booked')}><Check size={16} />Submit cargo</button>
+          <button className="btn btn-ghost" disabled={!h.product} onClick={() => save('Draft')}>Save draft</button><button className="btn btn-ghost" onClick={dup}>Duplicate item</button>
+          <button className="btn btn-ghost" onClick={() => { setF(init(cat)); setH({ ...h, product: '' }) }}><X size={16} />Clear item</button></div>
+        {draft && <p className="text-xs text-slate-400">{draft}</p>}
+      </div>
+      <div className="space-y-4">
+        <div className="glass p-4"><h3 className="mb-2 font-semibold">Summary before submission</h3>
+          <ul className="space-y-1 text-sm text-slate-200">{calc.lines.map(l => <li key={l}>{l}</li>)}{calc.lines.length === 0 && <li className="text-slate-400">Enter quantities to see totals.</li>}</ul>
+          {calc.volumeM3 != null && <p className="mt-2 text-sm">Total volume: {calc.volumeM3} m³</p>}</div>
+        {errors.length > 0 && <div className="glass border-amber-400/40 p-4 text-sm text-amber-200"><h3 className="mb-1 font-semibold">Fix before submitting</h3><ul className="list-disc pl-4">{errors.map(e => <li key={e}>{e}</li>)}</ul></div>}
+        {done && <div className="rim"><div className="glass p-4 text-center"><div className="font-semibold text-emerald-300">Saved: {done.c.id}</div><img className="mx-auto my-2 rounded bg-white p-1" src={done.qr} alt={`QR code for ${done.c.id}`} /><div className="text-xs text-slate-400">Shipment {done.c.shipmentId}</div></div></div>}
+      </div>
+    </div>)
+}
+
+function EditModal({ c, onSave, onClose }: { c: Cargo; onSave: (p: Partial<Cargo>) => void; onClose: () => void }) {
+  const [f, setF] = useState({ product: c.product, qty: c.qty, count: String(c.count), massKg: c.massKg == null ? '' : String(c.massKg), volumeM3: c.volumeM3 == null ? '' : String(c.volumeM3), origin: c.origin, destination: c.destination, mode: c.mode, status: c.status, location: c.location })
+  const k = (n: keyof typeof f) => (e: { target: { value: string } }) => setF({ ...f, [n]: e.target.value })
+  const errs = [!f.product && 'Product name is required', !f.origin && 'Origin is required', !f.destination && 'Destination is required', (f.massKg !== '' && !(Number(f.massKg) >= 0)) && 'Weight must be 0 or more', (f.volumeM3 !== '' && !(Number(f.volumeM3) >= 0)) && 'Volume must be 0 or more'].filter(Boolean) as string[]
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4" role="dialog" aria-modal="true" aria-label={`Edit ${c.id}`}><div className="glass max-h-[90vh] w-full max-w-lg overflow-auto p-5">
+      <div className="mb-3 flex justify-between"><h2 className="font-bold">Edit {c.id}</h2><button aria-label="Close" onClick={onClose}><X /></button></div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div><label className="lbl">Product<input className="inp mt-1" value={f.product} onChange={k('product')} /></label></div>
+        <div><label className="lbl">Quantity description<input className="inp mt-1" value={f.qty} onChange={k('qty')} /></label></div>
+        <div><label className="lbl">Item count<input className="inp mt-1" type="number" min="0" value={f.count} onChange={k('count')} /></label></div>
+        <div><label className="lbl">Weight kg<input className="inp mt-1" type="number" min="0" value={f.massKg} onChange={k('massKg')} /></label></div>
+        <div><label className="lbl">Volume m³<input className="inp mt-1" type="number" min="0" value={f.volumeM3} onChange={k('volumeM3')} /></label></div>
+        <div><label className="lbl">Current location<input className="inp mt-1" value={f.location} onChange={k('location')} /></label></div>
+        <div><label className="lbl">Origin<input className="inp mt-1" value={f.origin} onChange={k('origin')} /></label></div>
+        <div><label className="lbl">Destination<input className="inp mt-1" value={f.destination} onChange={k('destination')} /></label></div>
+        <Sel label="Transport mode" value={f.mode} onChange={v => setF({ ...f, mode: v })} opts={MODES} /><Sel label="Status" value={f.status} onChange={v => setF({ ...f, status: v })} opts={STATUSES} /></div>
+      {errs.length > 0 && <ul className="mt-3 list-disc pl-4 text-sm text-amber-200">{errs.map(e => <li key={e}>{e}</li>)}</ul>}
+      <div className="mt-4 flex gap-2"><button className="btn" disabled={errs.length > 0} onClick={() => onSave({ product: f.product, qty: f.qty, count: Number(f.count) || 0, massKg: f.massKg === '' ? null : Number(f.massKg), volumeM3: f.volumeM3 === '' ? null : Number(f.volumeM3), origin: f.origin, destination: f.destination, mode: f.mode, status: f.status, location: f.location })}>Save changes</button><button className="btn btn-ghost" onClick={onClose}>Cancel</button></div>
+    </div></div>)
+}
+
+function CargoTable({ cargo, role, update, remove, goAdd, log }: { cargo: Cargo[]; role: Role; update: (ids: string[], p: Partial<Cargo>) => void; remove: (ids: string[]) => void; goAdd: () => void; log: (e: Omit<Ev, 'id'>) => void }) {
+  const [q, setQ] = useState(''); const [cat, setCat] = useState('All'); const [st, setSt] = useState('All'); const [mode, setMode] = useState('All'); const [from, setFrom] = useState('')
+  const [sort, setSort] = useState<keyof Cargo>('updated'); const [asc, setAsc] = useState(false); const [page, setPage] = useState(0); const [size, setSize] = useState(25)
+  const [sel, setSel] = useState<Cargo | null>(null); const [qr, setQr] = useState(''); const [edit, setEdit] = useState<Cargo | null>(null); const [del, setDel] = useState<string[] | null>(null)
+  const [checked, setChecked] = useState<Set<string>>(new Set()); const [note, setNote] = useState('')
+  const canAdd = true, canDelete = true, canEdit = true, handle = true
+  const hay = useMemo(() => cargo.map(c => `${c.id} ${c.shipmentId} ${c.product} ${c.category} ${c.origin} ${c.destination} ${c.mode} ${c.location} ${c.status} ${c.dept}`.toLowerCase()), [cargo])
+  const rows = useMemo(() => {
+    const ql = q.toLowerCase(); const out: Cargo[] = []
+    cargo.forEach((c, i) => { if ((cat === 'All' || c.category === cat) && (st === 'All' || c.status === st) && (mode === 'All' || c.mode === mode) && (!from || c.updated >= from) && (!ql || hay[i].includes(ql))) out.push(c) })
+    return out.sort((a, b) => { const x = a[sort] ?? '', y = b[sort] ?? ''; return (x < y ? -1 : x > y ? 1 : 0) * (asc ? 1 : -1) })
+  }, [cargo, hay, q, cat, st, mode, from, sort, asc])
+  const pages = Math.max(1, Math.ceil(rows.length / size)); const cur = Math.min(page, pages - 1); const view = rows.slice(cur * size, cur * size + size)
+  useEffect(() => { if (sel) QRCode.toDataURL(`${sel.id}|${sel.shipmentId}`, { margin: 1, width: 180 }).then(setQr) }, [sel])
+  const byId = (ids: string[]) => cargo.filter(c => ids.includes(c.id))
+  const act = (ids: string[], kind: 'accept' | 'verify') => {
+    const ok = byId(ids).filter(c => (kind === 'accept' ? CAN_ACCEPT : CAN_VERIFY).includes(c.status)); const status = kind === 'accept' ? 'Accepted' : 'Verified'
+    if (ok.length) { update(ok.map(c => c.id), { status }); ok.slice(0, 50).forEach(c => log({ shipmentId: c.shipmentId, kind: 'event', title: `Cargo ${c.id} ${status.toLowerCase()} by ${role.name}`, place: c.location, tz: 'Asia/Kolkata', at: new Date().toISOString(), cargoId: c.id })) }
+    setNote(`${ok.length} cargo record${ok.length === 1 ? '' : 's'} ${status.toLowerCase()}${ids.length - ok.length ? `; ${ids.length - ok.length} skipped because their status does not allow it` : ''}.`); setChecked(new Set()); setSel(null)
+  }
+  const doDelete = () => { if (!del) return; remove(del); setNote(`${del.length} cargo record${del.length === 1 ? '' : 's'} deleted.`); setDel(null); setSel(null); setChecked(new Set()) }
+  const exp = () => { const h = ['id', 'shipmentId', 'product', 'category', 'qty', 'massKg', 'volumeM3', 'packaging', 'origin', 'destination', 'mode', 'dept', 'location', 'status', 'updated']
+    const csv = [h.join(','), ...rows.map(r => h.map(k => JSON.stringify((r as unknown as Record<string, unknown>)[k] ?? '')).join(','))].join('\n')
+    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' })); a.download = 'cargo.csv'; a.click() }
+  const th = (k: keyof Cargo, l: string) => <th className="cursor-pointer whitespace-nowrap p-2 text-left" onClick={() => { setSort(k); setAsc(sort === k ? !asc : true) }}>{l}{sort === k ? (asc ? ' ▲' : ' ▼') : ''}</th>
+  const toggle = (id: string) => setChecked(s => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n })
+  const ids = Array.from(checked)
+  return (
+    <div className="space-y-3"><div className="glass grid gap-2 p-3 sm:grid-cols-3 lg:grid-cols-7">
+      <input className="inp lg:col-span-2" placeholder={`Search ${cargo.length.toLocaleString()} records`} aria-label="Search cargo" value={q} onChange={e => { setQ(e.target.value); setPage(0) }} />
+      <select className="inp" aria-label="Category" value={cat} onChange={e => { setCat(e.target.value); setPage(0) }}><option>All</option>{CATEGORIES.map(([k, n]) => <option key={k} value={k}>{n}</option>)}</select>
+      <select className="inp" aria-label="Status" value={st} onChange={e => { setSt(e.target.value); setPage(0) }}><option>All</option>{STATUSES.map(s => <option key={s}>{s}</option>)}</select>
+      <select className="inp" aria-label="Transport mode" value={mode} onChange={e => { setMode(e.target.value); setPage(0) }}><option>All</option>{MODES.map(s => <option key={s}>{s}</option>)}</select>
+      <input className="inp" type="date" aria-label="Updated since" value={from} onChange={e => { setFrom(e.target.value); setPage(0) }} />
+      <button className="btn btn-ghost justify-center" onClick={exp}><Download size={16} />Export CSV</button></div>
+      <div className="flex flex-wrap items-center gap-2">{canAdd && <button className="btn" onClick={goAdd}><Plus size={16} />Add new cargo</button>}
+        {checked.size > 0 && <><span className="text-sm">{checked.size} selected</span>{handle && <button className="btn btn-ghost" onClick={() => act(ids, 'accept')}><Check size={16} />Accept</button>}{handle && <button className="btn btn-ghost" onClick={() => act(ids, 'verify')}><ShieldCheck size={16} />Verify</button>}{canDelete && <button className="btn btn-ghost text-red-300" onClick={() => setDel(ids)}><Trash2 size={16} />Delete</button>}<button className="btn btn-ghost" onClick={() => setChecked(new Set())}>Clear selection</button></>}
+        {note && <span role="status" className="text-sm text-cyan-300">{note}</span>}</div>
+      <div className="glass overflow-x-auto"><table className="w-full text-sm"><thead className="text-slate-400"><tr><th className="p-2"><input type="checkbox" aria-label="Select all on this page" checked={view.length > 0 && view.every(c => checked.has(c.id))} onChange={e => setChecked(s => { const n = new Set(s); view.forEach(c => e.target.checked ? n.add(c.id) : n.delete(c.id)); return n })} /></th>{th('id', 'Cargo ID')}{th('shipmentId', 'Shipment')}{th('product', 'Product')}{th('category', 'Category')}<th className="p-2 text-left">Quantity</th>{th('massKg', 'Weight kg')}{th('volumeM3', 'Volume m³')}{th('origin', 'Origin')}{th('destination', 'Destination')}{th('mode', 'Mode')}{th('location', 'Location')}{th('status', 'Status')}{th('updated', 'Updated')}<th className="p-2 text-left">Actions</th></tr></thead>
+        <tbody>{view.map(c => <tr key={c.id} className="border-t border-white/5 hover:bg-white/5">
+          <td className="p-2"><input type="checkbox" aria-label={`Select ${c.id}`} checked={checked.has(c.id)} onChange={() => toggle(c.id)} /></td>
+          <td className="p-2"><button className="underline decoration-dotted" onClick={() => setSel(c)}>{c.id}</button></td><td className="p-2">{c.shipmentId}</td><td className="p-2">{c.product}</td><td className="p-2">{c.category}</td><td className="p-2">{c.qty}</td><td className="p-2">{c.massKg ?? '-'}</td><td className="p-2">{c.volumeM3 ?? '-'}</td><td className="p-2">{c.origin}</td><td className="p-2">{c.destination}</td><td className="p-2">{c.mode}</td><td className="p-2">{c.location}</td><td className="p-2"><Badge s={c.status} /></td><td className="p-2 whitespace-nowrap">{fmtLocal(c.updated)}</td>
+          <td className="p-2 whitespace-nowrap"><div className="flex gap-1">
+            {handle && <button className="btn btn-ghost px-2" title="Accept" aria-label={`Accept ${c.id}`} disabled={!CAN_ACCEPT.includes(c.status)} onClick={() => act([c.id], 'accept')}><Check size={14} /></button>}
+            {handle && <button className="btn btn-ghost px-2" title="Verify" aria-label={`Verify ${c.id}`} disabled={!CAN_VERIFY.includes(c.status)} onClick={() => act([c.id], 'verify')}><ShieldCheck size={14} /></button>}
+            {canEdit && <button className="btn btn-ghost px-2" title="Edit" aria-label={`Edit ${c.id}`} onClick={() => setEdit(c)}><Pencil size={14} /></button>}
+            {canDelete && <button className="btn btn-ghost px-2 text-red-300" title="Delete" aria-label={`Delete ${c.id}`} onClick={() => setDel([c.id])}><Trash2 size={14} /></button>}</div></td></tr>)}
+          {view.length === 0 && <tr><td colSpan={15} className="p-6 text-center text-slate-400">No cargo matches these filters. Clear a filter or add new cargo.</td></tr>}</tbody></table></div>
+      <div className="flex flex-wrap items-center gap-3 text-sm"><button className="btn btn-ghost" disabled={cur === 0} onClick={() => setPage(cur - 1)}>Previous</button><span>Page {cur + 1} of {pages.toLocaleString()} ({rows.length.toLocaleString()} records)</span><button className="btn btn-ghost" disabled={cur >= pages - 1} onClick={() => setPage(cur + 1)}>Next</button>
+        <label className="ml-auto">Rows per page <select className="inp inline-block w-20" value={size} onChange={e => { setSize(Number(e.target.value)); setPage(0) }}>{[10, 25, 50, 100].map(n => <option key={n}>{n}</option>)}</select></label></div>
+      {sel && <div className="fixed inset-0 z-40 grid place-items-center bg-black/60 p-4" role="dialog" aria-modal="true"><div className="glass max-h-[90vh] w-full max-w-md overflow-auto p-5"><div className="mb-2 flex justify-between"><h2 className="font-bold">{sel.id}</h2><button aria-label="Close" onClick={() => setSel(null)}><X /></button></div>
+        <img className="mx-auto mb-3 rounded bg-white p-1" src={qr} alt="QR code" /><dl className="grid grid-cols-2 gap-1 text-sm">{Object.entries(sel).map(([k, v]) => <div key={k} className="contents"><dt className="text-slate-400">{k}</dt><dd>{k === 'updated' ? fmtLocal(String(v)) : String(v ?? '-')}</dd></div>)}</dl>
+        <div className="mt-4 flex flex-wrap gap-2">{handle && CAN_ACCEPT.includes(sel.status) && <button className="btn" onClick={() => act([sel.id], 'accept')}>Accept</button>}{handle && CAN_VERIFY.includes(sel.status) && <button className="btn" onClick={() => act([sel.id], 'verify')}>Verify</button>}{canEdit && <button className="btn btn-ghost" onClick={() => { setEdit(sel); setSel(null) }}>Edit</button>}{canDelete && <button className="btn btn-ghost text-red-300" onClick={() => setDel([sel.id])}>Delete</button>}</div></div></div>}
+      {edit && <EditModal c={edit} onClose={() => setEdit(null)} onSave={p => { update([edit.id], p); log({ shipmentId: edit.shipmentId, kind: 'event', title: `Cargo ${edit.id} updated by ${role.name}`, place: edit.location, tz: 'Asia/Kolkata', at: new Date().toISOString(), cargoId: edit.id }); setNote(`${edit.id} updated.`); setEdit(null) }} />}
+      {del && <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4" role="alertdialog" aria-modal="true"><div className="glass w-full max-w-sm p-5"><h2 className="font-bold">Delete {del.length} cargo record{del.length === 1 ? '' : 's'}?</h2><p className="mt-1 text-sm text-slate-300">This removes {del.length === 1 ? del[0] : 'the selected records'} from the cargo list. You can restore everything with Reset demo data.</p><div className="mt-4 flex gap-2"><button className="btn bg-red-600" onClick={doDelete}>Delete</button><button className="btn btn-ghost" onClick={() => setDel(null)}>Cancel</button></div></div></div>}
+    </div>)
+}
+
+function Tracking({ events, cargo }: { events: Ev[]; cargo: Cargo[] }) {
+  const [q, setQ] = useState('SHP-1001'); const [id, setId] = useState('SHP-1001')
+  const matches = useMemo(() => { const seen = new Set<string>(); const out: string[] = []; const ql = q.toLowerCase(); for (const c of cargo) { if (!seen.has(c.shipmentId) && (c.shipmentId + c.id + c.product).toLowerCase().includes(ql)) { seen.add(c.shipmentId); out.push(c.shipmentId); if (out.length >= 50) break } } return out }, [cargo, q])
+  const items = cargo.filter(c => c.shipmentId === id)
+  let list = events.filter(e => e.shipmentId === id).sort((a, b) => a.at.localeCompare(b.at)); let auto = false
+  if (list.length === 0 && items[0]) { const c = items[0]; auto = true; const u = new Date(c.updated).getTime()
+    list = [{ id: 'a1', shipmentId: id, kind: 'event', title: 'Cargo booked', place: c.origin, tz: 'Asia/Kolkata', at: new Date(u - 48 * 3600000).toISOString() }, { id: 'a2', shipmentId: id, kind: 'event', title: `Status: ${c.status}`, place: c.location, tz: 'Asia/Kolkata', at: c.updated }] }
+  const now = new Date().toISOString()
+  return (
+    <div className="space-y-3"><div className="glass grid gap-3 p-3 sm:grid-cols-2"><div><label className="lbl">Search shipment ID, cargo ID or product<input className="inp mt-1" value={q} onChange={e => setQ(e.target.value)} /></label></div>
+      <div><label className="lbl">Matching shipments (first 50)<select className="inp mt-1" value={id} onChange={e => setId(e.target.value)}>{!matches.includes(id) && <option>{id}</option>}{matches.map(i => <option key={i}>{i}</option>)}</select></label></div>
+      <p className="text-sm text-slate-400 sm:col-span-2">{items.map(c => `${c.product} (${c.id})`).join(', ') || 'No cargo found for this shipment.'}</p></div>
+      <div className="glass p-5">{auto && <p className="mb-3 text-xs text-slate-400">Timeline generated from the cargo record. Handovers and incidents you log will appear here.</p>}<ol className="relative border-l border-violet-400/40 pl-6">{list.map(e => (
+        <li key={e.id} className="mb-6"><span className={`absolute -left-[7px] h-3 w-3 rounded-full ${e.at > now ? 'bg-slate-500' : e.kind === 'incident' || e.rejected ? 'bg-red-400' : e.kind === 'handover' ? (e.confirmed ? 'bg-emerald-400' : 'bg-amber-400') : 'bg-cyan-400'}`} />
+          <div className="font-semibold">{e.title}{e.kind === 'handover' && <span className={`ml-2 text-xs ${e.rejected ? 'text-red-300' : e.confirmed ? 'text-emerald-300' : 'text-amber-300'}`}>{e.rejected ? 'Rejected by receiver' : e.confirmed ? 'Confirmed by receiver' : 'Awaiting receiver confirmation'}</span>}</div>
+          <div className="text-sm text-slate-300">{e.place}: {fmtLocal(e.at, e.tz)} ({e.tz})</div><div className="text-xs text-slate-500">{fmtLocal(e.at, 'UTC')} UTC{e.at > now ? ' (scheduled)' : ''}{e.from ? ` | ${e.from} to ${e.to}` : ''}</div></li>))}
+        {list.length === 0 && <li className="text-slate-400">No events for this shipment yet.</li>}</ol></div></div>)
+}
+
+function Ops(p: { role: Role; cargo: Cargo[]; update: (ids: string[], p: Partial<Cargo>) => void; events: Ev[]; setEvents: (f: (e: Ev[]) => Ev[]) => void; tasks: Task[]; setTasks: (f: (t: Task[]) => Task[]) => void; log: (e: Omit<Ev, 'id'>) => void }) {
+  const { role, cargo, update, events, setEvents, tasks, setTasks, log } = p
+  const [cq, setCq] = useState(''); const [cid, setCid] = useState(''); const [act, setAct] = useState('Receive'); const [actual, setActual] = useState(''); const [cond, setCond] = useState('Good'); const [msg, setMsg] = useState('')
+  const [to, setTo] = useState('Warehouse Staff'); const [note, setNote] = useState('')
+  const [nt, setNt] = useState({ title: '', shipmentId: '', priority: 'Normal', due: '17:00' })
+  const opts = useMemo(() => { const ql = cq.toLowerCase(); const out: Cargo[] = []; for (const x of cargo) { if (!ql || `${x.id} ${x.shipmentId} ${x.product}`.toLowerCase().includes(ql)) { out.push(x); if (out.length >= 50) break } } return out }, [cargo, cq])
+  const c = cargo.find(x => x.id === cid) || opts[0]
+  const place = c?.location || 'Terminal'; const tz = 'Asia/Kolkata'
+  const toRole = ROLES.find(r => r.name === to)?.id
+  const boss = role.add && role.ops
+  const submit = () => {
+    if (!c || actual === '' || !(parseFloat(actual) >= 0)) { setMsg('Enter the actual counted quantity.'); return }
+    const diff = parseFloat(actual) - c.count; const status = cond !== 'Good' ? 'Damaged' : act === 'Receive' ? (diff === 0 ? 'Received' : 'Awaiting verification') : act === 'Load' ? 'Loaded' : 'Unloaded'
+    update([c.id], { status })
+    log({ shipmentId: c.shipmentId, kind: cond === 'Good' ? 'event' : 'incident', title: `${act} recorded: ${actual} counted vs ${c.count} expected (${cond})`, place, tz, at: new Date().toISOString(), cargoId: c.id })
+    setMsg(diff === 0 ? 'Recorded. Quantities match.' : `Recorded with variance of ${diff} units. Cargo flagged for verification.`); setActual('')
+  }
+  const handover = () => { if (!c) return; log({ shipmentId: c.shipmentId, kind: 'handover', title: `Handover to ${to}`, place, tz, at: new Date().toISOString(), from: role.name, to, toRole, confirmed: false, cargoId: c.id }); setMsg('Handover created. The receiving team must confirm it.') }
+  const resolve = (id: string, ok: boolean) => setEvents(l => l.map(e => e.id === id ? { ...e, confirmed: ok, rejected: !ok } : e))
+  const pend = events.filter(e => e.kind === 'handover')
+  const incident = () => { if (!c || !note) return; log({ shipmentId: c.shipmentId, kind: 'incident', title: `Incident: ${note}`, place, tz, at: new Date().toISOString(), cargoId: c.id }); setNote(''); setMsg('Incident logged.') }
+  const addTask = () => { if (!nt.title || !nt.shipmentId) { setMsg('Task title and shipment ID are required.'); return } setTasks(l => [{ id: uid('t'), title: nt.title, shipmentId: nt.shipmentId, priority: nt.priority as Task['priority'], due: to12(nt.due), status: 'Pending' }, ...l]); setNt({ ...nt, title: '' }); setMsg('Task added.') }
+  return (
+    <div className="grid gap-4 lg:grid-cols-2">
+      <div className="glass space-y-3 p-4"><h2 className="font-semibold">Receive, load or unload cargo</h2>
+        <div className="grid gap-2 sm:grid-cols-2"><div><label className="lbl">Search cargo<input className="inp mt-1" value={cq} onChange={e => { setCq(e.target.value); setCid('') }} placeholder="Cargo ID, shipment or product" /></label></div>
+          <div><label className="lbl">Cargo (first 50 matches)<select className="inp mt-1" value={c?.id || ''} onChange={e => setCid(e.target.value)}>{opts.map(x => <option key={x.id} value={x.id}>{x.id} | {x.shipmentId} | {x.product}</option>)}</select></label></div></div>
+        {c && <p className="text-sm text-slate-300">Expected: {c.qty}. Current status: <Badge s={c.status} /></p>}
+        <div className="grid grid-cols-3 gap-2"><Sel label="Action" value={act} onChange={setAct} opts={['Receive', 'Load', 'Unload']} /><div><label className="lbl">Actual count<input className="inp mt-1" type="number" min="0" value={actual} onChange={e => setActual(e.target.value)} /></label></div><Sel label="Condition" value={cond} onChange={setCond} opts={['Good', 'Damaged', 'Missing items']} /></div>
+        <button className="btn" onClick={submit}>Confirm {act.toLowerCase()}</button>
+        <div className="border-t border-white/10 pt-3"><label className="lbl">Report incident or delay<input className="inp mt-1" value={note} onChange={e => setNote(e.target.value)} placeholder="Describe what happened" /></label><button className="btn btn-ghost mt-2" onClick={incident}>Log incident</button></div>
+        {msg && <p role="status" className="text-sm text-cyan-300">{msg}</p>}</div>
+      <div className="glass space-y-3 p-4"><h2 className="font-semibold">Handover</h2>
+        <Sel label="Hand over to" value={to} onChange={setTo} opts={ROLES.filter(r => ['warehouse', 'driver', 'shipping', 'portstaff', 'airstaff', 'portmgr'].includes(r.id)).map(r => r.name)} /><button className="btn" onClick={handover}>Create handover</button>
+        <ul className="max-h-72 space-y-2 overflow-auto text-sm">{pend.map(e => <li key={e.id} className="flex items-center justify-between gap-2 rounded bg-white/5 p-2"><span>{e.shipmentId}: {e.from} to {e.to}<br /><span className="text-xs text-slate-400">{fmtLocal(e.at, e.tz)}</span></span>
+          {e.confirmed ? <span className="text-emerald-300">Confirmed</span> : e.rejected ? <span className="text-red-300">Rejected</span> : <span className="flex gap-1"><button className="btn btn-ghost" disabled={role.id !== e.toRole && role.id !== 'admin'} title={role.id !== e.toRole ? `Only ${e.to} can confirm` : ''} onClick={() => resolve(e.id, true)}>Confirm receipt</button><button className="btn btn-ghost text-red-300" disabled={role.id !== e.toRole && role.id !== 'admin'} onClick={() => resolve(e.id, false)}>Reject</button></span>}</li>)}
+          {pend.length === 0 && <li className="text-slate-400">No handovers yet.</li>}</ul></div>
+      <div className="glass p-4 lg:col-span-2"><h2 className="mb-2 font-semibold">Tasks</h2>
+        {boss && <div className="mb-3 grid gap-2 sm:grid-cols-5"><input className="inp sm:col-span-2" aria-label="Task title" placeholder="New task title" value={nt.title} onChange={e => setNt({ ...nt, title: e.target.value })} /><input className="inp" aria-label="Shipment ID" placeholder="Shipment ID" value={nt.shipmentId} onChange={e => setNt({ ...nt, shipmentId: e.target.value })} /><input className="inp" type="time" aria-label="Due time" value={nt.due} onChange={e => setNt({ ...nt, due: e.target.value })} /><button className="btn justify-center" onClick={addTask}><Plus size={16} />Add task</button></div>}
+        <ul className="space-y-2 text-sm">{tasks.map(t => <li key={t.id} className="flex flex-wrap items-center gap-3 rounded bg-white/5 p-2">
+        <span className="flex-1">{t.title} <span className="text-slate-400">({t.shipmentId}, due {t.due})</span></span><span className={t.priority === 'High' ? 'text-amber-300' : 'text-slate-400'}>{t.priority}</span><span>{t.status}</span>
+        {t.status === 'Pending' && <button className="btn btn-ghost" onClick={() => setTasks(l => l.map(x => x.id === t.id ? { ...x, status: 'In progress' } : x))}>Start</button>}
+        {t.status === 'In progress' && <button className="btn" onClick={() => setTasks(l => l.map(x => x.id === t.id ? { ...x, status: 'Done' } : x))}>Complete</button>}
+        {t.status === 'Done' && boss && <button className="btn btn-ghost" onClick={() => setTasks(l => l.map(x => x.id === t.id ? { ...x, status: 'Pending' } : x))}>Reopen</button>}
+        {boss && <button className="btn btn-ghost px-2 text-red-300" aria-label={`Delete task ${t.title}`} onClick={() => setTasks(l => l.filter(x => x.id !== t.id))}><Trash2 size={14} /></button>}</li>)}
+        {tasks.length === 0 && <li className="text-slate-400">No tasks. {boss ? 'Add one above.' : 'Your supervisor can assign tasks.'}</li>}</ul></div>
+    </div>)
+}
+
+function Clock() {
+  const [now, setNow] = useState(new Date()); useEffect(() => { const i = setInterval(() => setNow(new Date()), 1000); return () => clearInterval(i) }, [])
+  const base = ['Asia/Kolkata', 'Asia/Singapore', 'Asia/Dubai', 'Europe/Amsterdam', 'Europe/London', 'America/New_York', 'America/Los_Angeles', 'Asia/Tokyo', 'Australia/Sydney']
+  const [src, setSrc] = useState('Asia/Kolkata'); const [t, setT] = useState('2026-11-01T09:00'); const [tz2, setTz2] = useState('Europe/Amsterdam')
+  const utc = zonedToUtc(t, src)
+  return (
+    <div className="space-y-4"><div className="grid grid-cols-2 gap-3 lg:grid-cols-3">{base.map(z => <div key={z} className="glass p-3"><div className="font-mono text-xl tracking-wider text-cyan-300">{fmtClock(now, z)}</div><div className="text-xs text-slate-400">{z}</div></div>)}</div>
+      <div className="glass grid gap-3 p-4 sm:grid-cols-3"><div><label className="lbl">From zone<select className="inp mt-1" value={src} onChange={e => setSrc(e.target.value)}>{allZones().map(z => <option key={z}>{z}</option>)}</select></label></div>
+        <div><label className="lbl">Local date and time<input className="inp mt-1" type="datetime-local" value={t} onChange={e => e.target.value && setT(e.target.value)} /></label></div>
+        <div><label className="lbl">To zone<select className="inp mt-1" value={tz2} onChange={e => setTz2(e.target.value)}>{allZones().map(z => <option key={z}>{z}</option>)}</select></label></div>
+        <div className="sm:col-span-3 text-lg">{fmtLocal(utc, tz2)} <span className="text-sm text-slate-400">in {tz2} | {fmtLocal(utc, 'UTC')} UTC</span></div></div></div>)
+}
